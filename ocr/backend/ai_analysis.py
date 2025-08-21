@@ -11,7 +11,7 @@ It integrates with Google's Gemini AI to identify sensitive information in docum
 """
 
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyDzBsP9iA21qepnVd8PIdQad3CisrX0V-Q")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 def analyze_document_text(text: str, document_type: str = "unknown") -> List[Dict[str, Any]]:
     """
