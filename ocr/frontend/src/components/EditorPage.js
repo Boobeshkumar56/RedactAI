@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Document, Page, pdfjs } from 'react-pdf';
 import styled from 'styled-components';
-import CanvasDraw from 'react-canvas-draw';
 import apiClient, { getApiUrl } from '../services/api';
 
 // Import the required PDF.js worker
@@ -198,21 +197,6 @@ const SummaryItem = styled.div`
   padding: 8px 0;
 `;
 
-// Canvas wrapper for drawing
-const CanvasWrapper = styled.div`
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: ${props => props.active ? 'auto' : 'none'};
-  z-index: ${props => props.active ? 10 : -1};
-  background-color: transparent; /* Ensure background is transparent */
-  display: flex;
-  align-items: center;
-  justify-content: center;
-`;
-
 // Button styles
 const Button = styled.button`
   padding: 12px 16px;
@@ -348,7 +332,7 @@ function EditorPage({ uploadedFile }) {
   const [uploadedFileState, setUploadedFileState] = useState(uploadedFile || null);
   
   // UI state
-  const [activeMode, setActiveMode] = useState('select'); // 'select' or 'brush'
+  const [activeMode, setActiveMode] = useState('select'); // 'select' or 'typing'
   const [redactionType, setRedactionType] = useState('temporary'); // 'temporary' or 'permanent'
   const [selectedFields, setSelectedFields] = useState([]);
   const [redactions, setRedactions] = useState([]);
@@ -358,23 +342,18 @@ function EditorPage({ uploadedFile }) {
   const [showPreview, setShowPreview] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   
+  // Manual typing state
+  const [textToRedact, setTextToRedact] = useState('');
+  const [textRedactionList, setTextRedactionList] = useState([]);
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  
   // AI analysis state
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiSuggestedFields, setAiSuggestedFields] = useState([]);
   const [aiAnalysisComplete, setAiAnalysisComplete] = useState(false);
   
-  // Brush settings
-  const [brushSize, setBrushSize] = useState(8); // Default brush size
-  
   // Refs
-  const canvasRef = useRef(null);
   const documentRef = useRef(null);
-  
-  // Get brush color based on redaction type
-  const getBrushColor = () => {
-    return redactionType === 'temporary' ? '#FFFF00' : '#FF0000';
-  };
-  
   // Load document from localStorage if not provided as prop
   useEffect(() => {
     if (!uploadedFile) {
@@ -411,31 +390,12 @@ function EditorPage({ uploadedFile }) {
     };
   }, []);
   
-    // Reset canvas when dimensions change
-  useEffect(() => {
-    if (pageWidth > 0 && pageHeight > 0 && canvasRef.current && activeMode === 'brush') {
-      try {
-        // Force canvas resize/reset when dimensions change
-        canvasRef.current.clear();
-        
-        // Get document element position
-        const documentElement = document.querySelector('.react-pdf__Page');
-        if (documentElement) {
-          const docRect = documentElement.getBoundingClientRect();
-          console.log('Document position:', docRect);
-        }
-      } catch (error) {
-        console.error("Error resetting canvas:", error);
-      }
-    }
-  }, [pageWidth, pageHeight, activeMode]);
-  
   // Document loading handlers
   function onDocumentLoadSuccess({ numPages }) {
     setNumPages(numPages);
     setPageNumber(1);
     
-    // After document loads, get element position for proper canvas alignment
+    // After document loads, get element position for proper alignment
     setTimeout(() => {
       const documentElement = document.querySelector('.react-pdf__Page');
       if (documentElement) {
@@ -457,13 +417,39 @@ function EditorPage({ uploadedFile }) {
   // Mode switching
   function handleModeChange(mode) {
     setActiveMode(mode);
-    if (mode === 'select' && canvasRef.current) {
-      try {
-        canvasRef.current.clear();
-      } catch (error) {
-        console.error("Error clearing canvas:", error);
-      }
+  }
+  
+  // Manual typing functions
+  function handleAddTextToRedact() {
+    if (!textToRedact.trim()) {
+      setError('Please enter some text to redact.');
+      return;
     }
+    
+    const newTextRedaction = {
+      id: `text-${Date.now()}`,
+      text: textToRedact.trim(),
+      redaction_type: redactionType,
+      case_sensitive: caseSensitive,
+      method: 'typing'
+    };
+    
+    setTextRedactionList([...textRedactionList, newTextRedaction]);
+    setTextToRedact('');
+    setError('');
+    setSuccess(`Added "${newTextRedaction.text}" to redaction list.`);
+  }
+  
+  function handleRemoveTextRedaction(id) {
+    setTextRedactionList(textRedactionList.filter(item => item.id !== id));
+  }
+  
+  function handleUpdateTextRedactionType(id, type) {
+    setTextRedactionList(
+      textRedactionList.map(item => 
+        item.id === id ? { ...item, redaction_type: type } : item
+      )
+    );
   }
   
   // Redaction type change
@@ -499,102 +485,6 @@ function EditorPage({ uploadedFile }) {
     );
   }
   
-  // Canvas drawing
-  function handleCanvasDraw() {
-    if (canvasRef.current && activeMode === 'brush' && pageWidth > 0 && pageHeight > 0) {
-      try {
-        const canvas = canvasRef.current.canvas.drawing;
-        const context = canvas.getContext('2d');
-        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-        const data = imageData.data;
-        
-        // Get document position and calculate offsets
-        const documentElement = document.querySelector('.react-pdf__Page');
-        let docOffsetX = 0;
-        let docOffsetY = 0;
-        
-        if (documentElement) {
-          const docRect = documentElement.getBoundingClientRect();
-          const canvasRect = canvas.getBoundingClientRect();
-          
-          // Calculate the offset between canvas and document
-          docOffsetX = Math.round((canvasRect.left - docRect.left));
-          docOffsetY = Math.round((canvasRect.top - docRect.top));
-          
-          console.log('Canvas/Document offset:', { docOffsetX, docOffsetY });
-        }
-        
-        // Find areas that were drawn on (non-transparent pixels)
-        let pixelsDrawn = false;
-        const minArea = { x1: canvas.width, y1: canvas.height, x2: 0, y2: 0 };
-        let redColor = false;
-        let yellowColor = false;
-        
-        for (let y = 0; y < canvas.height; y++) {
-          for (let x = 0; x < canvas.width; x++) {
-            const index = (y * canvas.width + x) * 4;
-            const alpha = data[index + 3];
-            
-            if (alpha > 0) {
-              pixelsDrawn = true;
-              minArea.x1 = Math.min(minArea.x1, x);
-              minArea.y1 = Math.min(minArea.y1, y);
-              minArea.x2 = Math.max(minArea.x2, x);
-              minArea.y2 = Math.max(minArea.y2, y);
-              
-              // Check the color - looking for red (#FF0000) or yellow (#FFFF00)
-              const r = data[index];
-              const g = data[index + 1];
-              const b = data[index + 2];
-              
-              // Detect red (high red, low green and blue)
-              if (r > 200 && g < 100 && b < 100) {
-                redColor = true;
-              }
-              
-              // Detect yellow (high red and green, low blue)
-              if (r > 200 && g > 200 && b < 100) {
-                yellowColor = true;
-              }
-            }
-          }
-        }
-        
-        // Only create a redaction if pixels were drawn
-        if (pixelsDrawn && minArea.x2 >= minArea.x1 && minArea.y2 >= minArea.y1) {
-          // Determine redaction type based on color
-          // If both colors are detected, prioritize red (permanent)
-          const brushRedactionType = redColor ? 'permanent' : (yellowColor ? 'temporary' : redactionType);
-          
-          // Apply offsets to coordinates to align with document
-          // Remove any offset to make coordinates relative to document
-          const adjustedX = minArea.x1 - docOffsetX;
-          const adjustedY = minArea.y1 - docOffsetY;
-          
-          const newRedaction = {
-            id: `brush-${Date.now()}`,
-            text: `Manual ${brushRedactionType.charAt(0).toUpperCase() + brushRedactionType.slice(1)} Redaction`,
-            method: 'brush',
-            page: pageNumber - 1,
-            redaction_type: brushRedactionType, // Use color-based redaction type
-            position: {
-              x: adjustedX,
-              y: adjustedY,
-              width: minArea.x2 - minArea.x1 + 1,
-              height: minArea.y2 - minArea.y1 + 1
-            }
-          };
-          
-          console.log('Created redaction with adjusted coordinates:', newRedaction);
-          setSelectedFields([...selectedFields, newRedaction]);
-          canvasRef.current.clear();
-        }
-      } catch (error) {
-        console.error("Error in canvas drawing:", error);
-      }
-    }
-  }
-  
   // Apply redactions
   async function handleApplyRedactions() {
     if (!uploadedFileState) {
@@ -602,8 +492,8 @@ function EditorPage({ uploadedFile }) {
       return;
     }
     
-    if (redactions.length === 0 && selectedFields.length === 0) {
-      setError('No redactions selected. Please select fields or use the brush tool to mark areas for redaction.');
+    if (selectedFields.length === 0 && textRedactionList.length === 0) {
+      setError('No redactions selected. Please select fields or add text to redact.');
       return;
     }
     
@@ -611,23 +501,45 @@ function EditorPage({ uploadedFile }) {
     setError('');
     setSuccess('');
     
-    const allRedactions = [
-      ...redactions,
-      ...selectedFields
-    ];
-    
     try {
-      const response = await apiClient.post('/api/redact', {
-        file_id: uploadedFileState.file_id,
-        redactions: allRedactions,
-        redaction_type: redactionType,
-        document_type: uploadedFileState.document_type || 'unknown'
-      });
+      let response;
+      
+      // If we have manual typing redactions, use the text-based API
+      if (textRedactionList.length > 0) {
+        console.log('Applying text redactions:', textRedactionList);
+        
+        response = await apiClient.post('/api/redact', {
+          file_id: uploadedFileState.file_id,
+          text_to_redact: textRedactionList,
+          document_type: uploadedFileState.document_type || 'unknown',
+          language: uploadedFileState.language || 'eng'
+        });
+        
+        console.log('Text redaction response:', response.data);
+      } else {
+        // Use field selection redaction
+        console.log('Applying field selection redactions:', selectedFields);
+        
+        response = await apiClient.post('/api/redact', {
+          file_id: uploadedFileState.file_id,
+          redactions: selectedFields,
+          redaction_type: redactionType,
+          document_type: uploadedFileState.document_type || 'unknown',
+          language: uploadedFileState.language || 'eng'
+        });
+        
+        console.log('Field selection redaction response:', response.data);
+      }
       
       // Show preview and allow download
       setPreviewUrl(getApiUrl(`/api/download/${response.data.redacted_file_id}`));
       setShowPreview(true);
-      setSuccess('Document successfully redacted! You can now download the result.');
+      
+      if (textRedactionList.length > 0) {
+        setSuccess(`Document successfully redacted using text-based search! Found and redacted ${response.data.total_redactions || 0} instances.`);
+      } else {
+        setSuccess('Document successfully redacted! You can now download the result.');
+      }
     } catch (err) {
       console.error('Redaction error:', err);
       if (err.response) {
@@ -653,18 +565,12 @@ function EditorPage({ uploadedFile }) {
   function handleReset() {
     setSelectedFields([]);
     setRedactions([]);
+    setTextRedactionList([]);
+    setTextToRedact('');
     setShowPreview(false);
     setPreviewUrl('');
     setError('');
     setSuccess('');
-    
-    if (canvasRef.current && activeMode === 'brush') {
-      try {
-        canvasRef.current.clear();
-      } catch (error) {
-        console.error("Error clearing canvas:", error);
-      }
-    }
   }
   
   // Analyze document with AI to detect sensitive fields
@@ -905,37 +811,6 @@ function EditorPage({ uploadedFile }) {
       <DocumentPane ref={documentRef}>
         {/* Always render the document, regardless of mode */}
         {renderDocument()}
-        
-        {/* Only render canvas when document is loaded and brush mode is active */}
-        {uploadedFileState && pageWidth > 0 && pageHeight > 0 && activeMode === 'brush' && !showPreview && (
-          <CanvasWrapper active={activeMode === 'brush'}>
-            <div style={{ 
-              position: 'relative', 
-              width: pageWidth, 
-              height: pageHeight,
-              overflow: 'hidden'
-            }}>
-              <CanvasDraw
-                ref={canvasRef}
-                brushColor={getBrushColor()}
-                brushRadius={brushSize}
-                lazyRadius={0}
-                canvasWidth={pageWidth}
-                canvasHeight={pageHeight}
-                onChange={handleCanvasDraw}
-                hideGrid={true}
-                immediateLoading={true}
-                backgroundColor="rgba(0, 0, 0, 0)"
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  opacity: 0.8
-                }}
-              />
-            </div>
-          </CanvasWrapper>
-        )}
       </DocumentPane>
       
       <ControlPane>
@@ -953,17 +828,17 @@ function EditorPage({ uploadedFile }) {
                   Field Selection
                 </ModeTab>
                 <ModeTab
-                  active={activeMode === 'brush'}
-                  onClick={() => handleModeChange('brush')}
+                  active={activeMode === 'typing'}
+                  onClick={() => handleModeChange('typing')}
                 >
-                  Manual Drawing
+                  Text Redaction
                 </ModeTab>
               </ModeTabs>
               
               <div style={{ marginTop: '10px', fontSize: '13px', color: '#555', fontStyle: 'italic' }}>
-                {activeMode === 'brush' ? 
-                  'Draw directly on the document. Red = permanent redaction, Yellow = temporary redaction.' : 
-                  'Select fields from the list on the right to mark them for redaction.'}
+                {activeMode === 'typing' ?
+                  'Type the exact text you want to redact. The system will find and redact all instances.' :
+                  'Select fields from the list to mark them for redaction.'}
               </div>
             </Section>
             
@@ -1014,6 +889,109 @@ function EditorPage({ uploadedFile }) {
                 </div>
               )}
             </Section>
+            
+            {activeMode === 'typing' && (
+              <Section>
+                <SectionTitle>Text Redaction</SectionTitle>
+                <p style={{ marginBottom: '15px', fontSize: '14px', color: '#666' }}>
+                  Type the exact text you want to redact. The system will automatically find and redact all instances of this text in your document.
+                </p>
+                
+                <div style={{ marginBottom: '15px' }}>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
+                    Text to redact:
+                  </label>
+                  <input
+                    type="text"
+                    value={textToRedact}
+                    onChange={(e) => setTextToRedact(e.target.value)}
+                    placeholder="e.g., John Smith, 1234-5678-9012, etc."
+                    style={{
+                      width: '100%',
+                      padding: '10px',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      fontSize: '14px'
+                    }}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        handleAddTextToRedact();
+                      }
+                    }}
+                  />
+                </div>
+                
+                <div style={{ marginBottom: '15px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', fontSize: '14px' }}>
+                    <input
+                      type="checkbox"
+                      checked={caseSensitive}
+                      onChange={(e) => setCaseSensitive(e.target.checked)}
+                      style={{ marginRight: '8px' }}
+                    />
+                    Case sensitive search
+                  </label>
+                </div>
+                
+                <Button 
+                  primary
+                  onClick={handleAddTextToRedact}
+                  style={{ width: '100%', marginBottom: '20px' }}
+                  disabled={!textToRedact.trim()}
+                >
+                  Add Text to Redaction List
+                </Button>
+                
+                {textRedactionList.length > 0 && (
+                  <div>
+                    <h4 style={{ marginBottom: '10px', fontSize: '14px', color: '#333' }}>
+                      Texts to Redact ({textRedactionList.length}):
+                    </h4>
+                    <FieldList style={{ maxHeight: '200px' }}>
+                      {textRedactionList.map(item => (
+                        <FieldItem key={item.id} style={{ padding: '10px' }}>
+                          <FieldName style={{ fontSize: '14px', marginBottom: '8px' }}>
+                            "{item.text}"
+                            <button
+                              onClick={() => handleRemoveTextRedaction(item.id)}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                color: '#f44336',
+                                cursor: 'pointer',
+                                fontSize: '16px'
+                              }}
+                            >
+                              ×
+                            </button>
+                          </FieldName>
+                          <FieldValue style={{ marginBottom: '8px' }}>
+                            {item.case_sensitive ? 'Case sensitive' : 'Case insensitive'}
+                          </FieldValue>
+                          <FieldControls visible={true}>
+                            <div style={{ fontSize: '12px', marginRight: '8px' }}>Type:</div>
+                            <RedactionTypeButton 
+                              permanent={false}
+                              selected={item.redaction_type === 'temporary'}
+                              onClick={() => handleUpdateTextRedactionType(item.id, 'temporary')}
+                            >
+                              Temporary
+                            </RedactionTypeButton>
+                            <RedactionTypeButton 
+                              permanent={true}
+                              selected={item.redaction_type === 'permanent'}
+                              onClick={() => handleUpdateTextRedactionType(item.id, 'permanent')}
+                            >
+                              Permanent
+                            </RedactionTypeButton>
+                          </FieldControls>
+                        </FieldItem>
+                      ))}
+                    </FieldList>
+                  </div>
+                )}
+              </Section>
+            )}
             
             {activeMode === 'select' && (
               <Section>
@@ -1097,42 +1075,12 @@ function EditorPage({ uploadedFile }) {
                   ) : (
                     <EmptyState style={{ padding: '20px' }}>
                       {aiAnalysisComplete ? 
-                        <p>No sensitive fields detected on this page, even with AI analysis. Try using the manual drawing tool.</p> :
-                        <p>No sensitive fields detected on this page. Try using AI analysis or the manual drawing tool.</p>
+                        <p>No sensitive fields detected on this page, even with AI analysis. Try using manual typing instead.</p> :
+                        <p>No sensitive fields detected on this page. Try using AI analysis or manual typing.</p>
                       }
                     </EmptyState>
                   )}
                 </FieldList>
-              </Section>
-            )}
-            
-            {activeMode === 'brush' && (
-              <Section>
-                <SectionTitle>Manual Redaction</SectionTitle>
-                <p style={{ marginBottom: '10px' }}>
-                  Draw directly on the document to redact specific areas.
-                </p>
-                <p>
-                  Current color: <ColorIndicator color={getBrushColor()} /> 
-                  {redactionType === 'temporary' ? ' Temporary' : ' Permanent'} redaction
-                </p>
-                
-                {/* Brush Size Control */}
-                <div style={{ marginTop: '15px' }}>
-                  <p style={{ marginBottom: '5px', fontSize: '14px' }}>Brush Size: {brushSize}</p>
-                  <div style={{ display: 'flex', alignItems: 'center' }}>
-                    <span style={{ fontSize: '12px', marginRight: '8px' }}>Small</span>
-                    <input 
-                      type="range" 
-                      min="3" 
-                      max="20" 
-                      value={brushSize} 
-                      onChange={(e) => setBrushSize(parseInt(e.target.value))}
-                      style={{ flex: 1 }}
-                    />
-                    <span style={{ fontSize: '12px', marginLeft: '8px' }}>Large</span>
-                  </div>
-                </div>
               </Section>
             )}
             
@@ -1143,13 +1091,20 @@ function EditorPage({ uploadedFile }) {
                 <span>{selectedFields.length}</span>
               </SummaryItem>
               <SummaryItem>
-                <span>Manual redactions:</span>
-                <span>{redactions.length}</span>
+                <span>Text redactions:</span>
+                <span>{textRedactionList.length}</span>
               </SummaryItem>
               <SummaryItem>
-                <span>Redaction type:</span>
+                <span>Total redactions:</span>
+                <span>{selectedFields.length + textRedactionList.length}</span>
+              </SummaryItem>
+              <SummaryItem>
+                <span>Default redaction type:</span>
                 <span style={{ display: 'flex', alignItems: 'center' }}>
-                  <ColorIndicator color={getBrushColor()} style={{ marginRight: '5px' }} />
+                  <ColorIndicator 
+                    color={redactionType === 'temporary' ? '#FFFF00' : '#FF0000'} 
+                    style={{ marginRight: '5px' }} 
+                  />
                   {redactionType === 'temporary' ? 'Temporary' : 'Permanent'}
                 </span>
               </SummaryItem>
@@ -1162,7 +1117,7 @@ function EditorPage({ uploadedFile }) {
               <Button 
                 primary
                 onClick={handleApplyRedactions}
-                disabled={loading || (selectedFields.length === 0 && redactions.length === 0)}
+                disabled={loading || (selectedFields.length === 0 && textRedactionList.length === 0)}
               >
                 {loading ? <><LoadingSpinner />Processing...</> : 'Apply Redactions'}
               </Button>
@@ -1170,7 +1125,7 @@ function EditorPage({ uploadedFile }) {
               <Button 
                 danger
                 onClick={handleReset}
-                disabled={loading || (selectedFields.length === 0 && redactions.length === 0)}
+                disabled={loading || (selectedFields.length === 0 && textRedactionList.length === 0)}
               >
                 Reset All
               </Button>
@@ -1188,13 +1143,16 @@ function EditorPage({ uploadedFile }) {
                 <span>{selectedFields.length}</span>
               </SummaryItem>
               <SummaryItem>
-                <span>Manual areas:</span>
-                <span>{redactions.length}</span>
+                <span>Text redactions:</span>
+                <span>{textRedactionList.length}</span>
               </SummaryItem>
               <SummaryItem>
                 <span>Redaction type:</span>
                 <span style={{ display: 'flex', alignItems: 'center' }}>
-                  <ColorIndicator color={getBrushColor()} style={{ marginRight: '5px' }} />
+                  <ColorIndicator 
+                    color={redactionType === 'temporary' ? '#FFFF00' : '#FF0000'} 
+                    style={{ marginRight: '5px' }} 
+                  />
                   {redactionType === 'temporary' ? 'Temporary' : 'Permanent'}
                 </span>
               </SummaryItem>

@@ -3,15 +3,28 @@ import json
 import re
 import subprocess
 import shlex
+import os
 from typing import List, Dict, Any, Optional
+from dotenv import load_dotenv
 
 """
 This file contains the code for AI-based document analysis.
 It integrates with Google's Gemini AI to identify sensitive information in documents.
 """
 
+# Load environment variables from .env file
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
+# Get API key from environment variables
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# Check if API key exists
+if not GEMINI_API_KEY:
+    print("WARNING: GEMINI_API_KEY environment variable is not set. Please set it in your .env file.")
+    # You can uncomment and set a hardcoded key for testing ONLY
+    # GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE" 
+    print(f"Environment variables: {os.environ.get('PATH')[:20]}...")
+
 
 def analyze_document_text(text: str, document_type: str = "unknown") -> List[Dict[str, Any]]:
     """
@@ -24,6 +37,16 @@ def analyze_document_text(text: str, document_type: str = "unknown") -> List[Dic
     Returns:
         A list of identified sensitive fields with their categories
     """
+    # Print the extracted text for debugging
+    print("\n========== EXTRACTED TEXT ==========")
+    print(text[:500] + "..." if len(text) > 500 else text)
+    print("====================================\n")
+    
+    # Check if API key is available
+    if not GEMINI_API_KEY:
+        print("ERROR: GEMINI_API_KEY is not set in .env file. Falling back to regex-based analysis.")
+        return analyze_with_regex(text)
+        
     try:
         # Define known non-sensitive elements for different document types
         non_sensitive_terms = [
@@ -45,40 +68,42 @@ def analyze_document_text(text: str, document_type: str = "unknown") -> List[Dic
             ])
         
         prompt = f"""
-        First, analyze the text to determine what type of document this is (e.g., resume, identity card, certificate, financial statement, medical record, etc.).
+        You are an expert document analyzer with a specialty in identifying sensitive information across multiple languages.
         
-        Then, based on the document type, identify ONLY genuine personal/sensitive information. For example:
-        - In a course certificate: identify the person's name but DON'T mark completion dates as DOB
-        - In a resume: identify contact details but DON'T mark job titles or skills as sensitive
-        - In an ID card: identify personal information but DON'T mark document headers, titles, or labels
+        First, analyze what type of document this is (ID card, resume, certificate, financial statement, medical record, etc.).
         
-        Consider the document context before classifying fields. Only mark information as sensitive if it reveals personal identifiable information about an individual.
+        CRUCIAL: You must identify ALL personal information regardless of language or format. Be extremely thorough.
         
-        DO NOT mark these elements as sensitive (these are document headers/labels, not sensitive information):
-        {", ".join(non_sensitive_terms)}
-        
-        Identify these types of information:
-        - Full names of individuals
-        - Physical addresses (home, mailing)
+        For Aadhar/Aadhaar cards, be EXTREMELY thorough in identifying ALL sensitive fields, including:
+        - Full name (in any language)
+        - Date of birth (in any format: MM/DD/YYYY, DD/MM/YYYY, or written in words)
+        - Aadhar number (12 digits, may have spaces like: XXXX XXXX XXXX)
+        - Complete address (including house number, street, village/city, state, pincode)
+        - Gender information
         - Phone numbers
         - Email addresses
-        - ID numbers (Aadhar, PAN, passport, SSN, etc.)
-        - Actual dates of birth (not other dates)
-        - Financial information (account numbers, credit cards)
+        - Parent/guardian names
         
-        Format your response as a JSON array with the following structure:
+        For all documents, carefully identify ANY sensitive personal information in ANY language:
+        - English, Hindi, Tamil, Telugu, Kannada, Malayalam, or any other Indian language
+        - Names often appear after "Name:", "नाम:", "பெயர்:", "ಹೆಸರು:", etc.
+        - Addresses appear after "Address:", "पता:", "முகவரி:", "ವಿಳಾಸ:", etc.
+        - DOB appears after "DOB:", "Date of Birth:", "जन्म तिथि:", "பிறந்த தேதி:", "ಹುಟ್ಟಿದ ದಿನಾಂಕ:", etc.
+        
+        DO NOT mark these as sensitive (these are document headers/labels):
+        {", ".join(non_sensitive_terms)}
+        
+        Format your response as a JSON array with this structure:
         [
           {{
             "text": "the exact sensitive text",
             "category": "category name (Name, Address, Phone, Email, ID_Number, DOB, Financial)",
-            "confidence": confidence score between 0-100,
-            "reason": "brief explanation of why this is sensitive in this document context"
+            "confidence": confidence score between 0-100
           }},
           ...
         ]
         
         Only output the JSON array, nothing else.
-        This should work for multilingual text (English, Hindi, Tamil, Telugu, Kannada, Malayalam, etc.)
         
         Text to analyze:
         {text}
@@ -116,6 +141,10 @@ def analyze_document_text(text: str, document_type: str = "unknown") -> List[Dic
         
         # Execute the curl command
         print(f"Calling Gemini API with model: gemini-2.0-flash")
+        print(f"API Key length: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 'None'}")
+        print(f"First 4 chars of API key: {GEMINI_API_KEY[:4] if GEMINI_API_KEY else 'None'}")
+        print(f"Executing curl command: {' '.join([c if '-d' not in c and i == 0 else '...' for i, c in enumerate(curl_command)])}")
+        
         process = subprocess.Popen(
             curl_command,
             stdout=subprocess.PIPE,
@@ -191,6 +220,10 @@ def analyze_with_regex(text: str) -> List[Dict[str, Any]]:
     """
     sensitive_fields = []
     
+    # Print for debugging
+    print("\n========== USING REGEX FALLBACK ==========")
+    print(f"Text length: {len(text)}")
+    
     # Find potential names (capitalized words)
     name_matches = re.finditer(r'\b[A-Z][a-z]+ [A-Z][a-z]+\b', text)
     for match in name_matches:
@@ -201,22 +234,76 @@ def analyze_with_regex(text: str) -> List[Dict[str, Any]]:
             "position": {"start": match.start(), "end": match.end()}
         })
     
+    # More aggressive pattern for names with potential OCR errors
+    name_alt_matches = re.finditer(r'\b[A-Z][a-z]{2,} +[A-Z][a-z]{2,}\b', text)
+    for match in name_alt_matches:
+        sensitive_fields.append({
+            "text": match.group(),
+            "category": "Name",
+            "confidence": 75,
+            "position": {"start": match.start(), "end": match.end()}
+        })
+    
+    # Find names after common name labels in different languages
+    name_label_patterns = [
+        r'(?:Name|नाम|பெயர்|ಹೆಸರು|పేరు|പേര്)[\s\:]+([\w\s]+)',
+        r'(?:S/o|D/o|W/o|C/o)[\s\:]+([\w\s]+)',
+        r'(?:Father|Mother|Guardian)[\s\:]+([\w\s]+)',
+    ]
+    
+    for pattern in name_label_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            if match.group(1).strip():
+                sensitive_fields.append({
+                    "text": match.group(1).strip(),
+                    "category": "Name",
+                    "confidence": 90,
+                    "position": {"start": match.start(1), "end": match.end(1)}
+                })
+    
     # Find Aadhar numbers (12 digits, may have spaces)
     aadhar_matches = re.finditer(r'\b\d{4}\s?\d{4}\s?\d{4}\b', text)
     for match in aadhar_matches:
         sensitive_fields.append({
             "text": match.group(),
-            "category": "Aadhar Number",
+            "category": "ID_Number",
             "confidence": 95,
             "position": {"start": match.start(), "end": match.end()}
         })
+    
+    # More forgiving pattern for Aadhar with potential OCR errors
+    aadhar_alt_matches = re.finditer(r'\b\d{3,4}[\s\-]?\d{3,4}[\s\-]?\d{3,4}\b', text)
+    for match in aadhar_alt_matches:
+        if len(re.sub(r'[\s\-]', '', match.group())) >= 10:  # At least 10 digits
+            sensitive_fields.append({
+                "text": match.group(),
+                "category": "ID_Number",
+                "confidence": 85,
+                "position": {"start": match.start(), "end": match.end()}
+            })
+    
+    # Find text after Aadhar/Aadhaar labels
+    aadhar_label_patterns = [
+        r'(?:Aadhar|Aadhaar|आधार|ஆதார்|ಆಧಾರ್|ആധാർ)[\s\:]+([\d\s]{10,})',
+        r'(?:UID|VID|यूआईडी|யூஐடி|ಯುಐಡಿ)[\s\:]+([\d\s]{10,})',
+    ]
+    
+    for pattern in aadhar_label_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            if match.group(1).strip():
+                sensitive_fields.append({
+                    "text": match.group(1).strip(),
+                    "category": "ID_Number",
+                    "confidence": 95,
+                    "position": {"start": match.start(1), "end": match.end(1)}
+                })
     
     # Find PAN numbers (10 characters, format: AAAAA0000A)
     pan_matches = re.finditer(r'\b[A-Z]{5}\d{4}[A-Z]\b', text)
     for match in pan_matches:
         sensitive_fields.append({
             "text": match.group(),
-            "category": "PAN",
+            "category": "ID_Number",
             "confidence": 95,
             "position": {"start": match.start(), "end": match.end()}
         })
@@ -236,22 +323,112 @@ def analyze_with_regex(text: str) -> List[Dict[str, Any]]:
     for match in phone_matches:
         sensitive_fields.append({
             "text": match.group(),
-            "category": "Phone Number",
+            "category": "Phone",
             "confidence": 85,
             "position": {"start": match.start(), "end": match.end()}
         })
     
-    # Find dates of birth
-    dob_matches = re.finditer(r'\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b', text)
-    for match in dob_matches:
+    # Find phone numbers with country code or formatting
+    phone_alt_matches = re.finditer(r'\b[\+]?[0-9]{1,3}[\s\-]?[0-9]{3,5}[\s\-]?[0-9]{3,5}\b', text)
+    for match in phone_alt_matches:
         sensitive_fields.append({
             "text": match.group(),
-            "category": "Date of Birth",
+            "category": "Phone",
             "confidence": 80,
             "position": {"start": match.start(), "end": match.end()}
         })
     
-    return sensitive_fields
+    # Find phone numbers after labels
+    phone_label_patterns = [
+        r'(?:Phone|Mobile|Tel|फोन|मोबाइल|फ़ोन|தொலைபேசி|மொபைல்|ಫೋನ್|ಮೊಬೈಲ್)[\s\:]+([\d\s\+\-]{8,})',
+    ]
+    
+    for pattern in phone_label_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            if match.group(1).strip():
+                sensitive_fields.append({
+                    "text": match.group(1).strip(),
+                    "category": "Phone",
+                    "confidence": 90,
+                    "position": {"start": match.start(1), "end": match.end(1)}
+                })
+    
+    # Find dates of birth (multiple formats)
+    dob_matches = re.finditer(r'\b\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}\b', text)
+    for match in dob_matches:
+        sensitive_fields.append({
+            "text": match.group(),
+            "category": "DOB",
+            "confidence": 80,
+            "position": {"start": match.start(), "end": match.end()}
+        })
+    
+    # Find dates in year-first format (ISO)
+    dob_alt_matches = re.finditer(r'\b\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2}\b', text)
+    for match in dob_alt_matches:
+        sensitive_fields.append({
+            "text": match.group(),
+            "category": "DOB",
+            "confidence": 80,
+            "position": {"start": match.start(), "end": match.end()}
+        })
+    
+    # Find DOB after labels
+    dob_label_patterns = [
+        r'(?:DOB|Date of Birth|जन्म तिथि|பிறந்த தேதி|ಹುಟ್ಟಿದ ದಿನಾಂಕ|ജനന തീയതി|జన్మతేది)[\s\:]+([\d\s\-/\.]{6,})',
+        r'(?:Born on|Birth Date)[\s\:]+([\d\s\-/\.]{6,})',
+    ]
+    
+    for pattern in dob_label_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            if match.group(1).strip():
+                sensitive_fields.append({
+                    "text": match.group(1).strip(),
+                    "category": "DOB",
+                    "confidence": 90,
+                    "position": {"start": match.start(1), "end": match.end(1)}
+                })
+    
+    # Find potential addresses (look for common keywords and patterns)
+    address_matches = re.finditer(r'\b(?:No|#)\.?\s*\d+\s*,?.*?(?:Road|Street|Ave|Avenue|Blvd|Boulevard|Lane|Drive|Dr).*?(?:\d{5,6})?', text, re.IGNORECASE)
+    for match in address_matches:
+        if len(match.group()) > 10:  # Avoid too short matches
+            sensitive_fields.append({
+                "text": match.group(),
+                "category": "Address",
+                "confidence": 75,
+                "position": {"start": match.start(), "end": match.end()}
+            })
+    
+    # Find addresses after labels
+    address_label_patterns = [
+        r'(?:Address|Addr|पता|முகவரி|ವಿಳಾಸ|വിലാസം|చిరునామా)[\s\:]+([\w\s\d\-\.,/#]{10,})',
+        r'(?:Residence|Res\.|Home)[\s\:]+([\w\s\d\-\.,/#]{10,})',
+    ]
+    
+    for pattern in address_label_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            # Only include if match includes street/building details
+            if match.group(1).strip() and len(match.group(1)) > 10:
+                sensitive_fields.append({
+                    "text": match.group(1).strip(),
+                    "category": "Address",
+                    "confidence": 85,
+                    "position": {"start": match.start(1), "end": match.end(1)}
+                })
+    
+    # Deduplicate fields with same text
+    seen_texts = set()
+    unique_fields = []
+    for field in sensitive_fields:
+        text_key = field["text"].lower()
+        if text_key not in seen_texts:
+            seen_texts.add(text_key)
+            unique_fields.append(field)
+    
+    print(f"Regex found {len(unique_fields)} sensitive fields")
+    print("=======================================\n")
+    return unique_fields
     
 def enhance_document_fields(extracted_fields: List[Dict[str, Any]], document_type: str = "unknown") -> List[Dict[str, Any]]:
     """

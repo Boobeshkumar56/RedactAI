@@ -26,10 +26,13 @@ except ImportError:
 # --- Global Configurations ---
 TEMPLATES = {
     "aadhaar": {
+        # Added more precise coordinates for standard Aadhaar ePDF layout
         "name": {'x': 0.12, 'y': 0.22, 'w': 0.6, 'h': 0.08, 'label': 'Name'},
         "aadhaar_number": {'x': 0.12, 'y': 0.34, 'w': 0.5, 'h': 0.08, 'label': 'Aadhaar Number'},
         "address": {'x': 0.12, 'y': 0.46, 'w': 0.7, 'h': 0.12, 'label': 'Address'},
         "dob": {'x': 0.12, 'y': 0.28, 'w': 0.4, 'h': 0.07, 'label': 'Date of Birth'},
+        # Add parent/guardian name which is sometimes present
+        "parent_name": {'x': 0.12, 'y': 0.40, 'w': 0.6, 'h': 0.07, 'label': 'Parent/Guardian Name'},
     },
     # Make sure aadhar (alternative spelling) has the same template as aadhaar
     "aadhar": {
@@ -37,17 +40,38 @@ TEMPLATES = {
         "aadhaar_number": {'x': 0.12, 'y': 0.34, 'w': 0.5, 'h': 0.08, 'label': 'Aadhaar Number'},
         "address": {'x': 0.12, 'y': 0.46, 'w': 0.7, 'h': 0.12, 'label': 'Address'},
         "dob": {'x': 0.12, 'y': 0.28, 'w': 0.4, 'h': 0.07, 'label': 'Date of Birth'},
+        "parent_name": {'x': 0.12, 'y': 0.40, 'w': 0.6, 'h': 0.07, 'label': 'Parent/Guardian Name'},
+    },
+    # Add eAadhaar specific template (downloaded PDF from UIDAI)
+    "eaadhaar": {
+        "name": {'x': 0.34, 'y': 0.20, 'w': 0.55, 'h': 0.06, 'label': 'Name'},
+        "aadhaar_number": {'x': 0.34, 'y': 0.33, 'w': 0.45, 'h': 0.06, 'label': 'Aadhaar Number'},
+        "address": {'x': 0.12, 'y': 0.58, 'w': 0.80, 'h': 0.14, 'label': 'Address'},
+        "dob": {'x': 0.34, 'y': 0.27, 'w': 0.45, 'h': 0.06, 'label': 'Date of Birth'},
+        "gender": {'x': 0.34, 'y': 0.24, 'w': 0.20, 'h': 0.06, 'label': 'Gender'},
+        "photo": {'x': 0.12, 'y': 0.20, 'w': 0.15, 'h': 0.20, 'label': 'Photo'},
+        "qr_code": {'x': 0.12, 'y': 0.40, 'w': 0.15, 'h': 0.15, 'label': 'QR Code'},
     },
     "pan": {
         "pan_number": {'x': 0.08, 'y': 0.34, 'w': 0.5, 'h': 0.09, 'label': 'PAN'},
         "name": {'x': 0.08, 'y': 0.2, 'w': 0.7, 'h': 0.09, 'label': 'Name'},
         "dob": {'x': 0.08, 'y': 0.26, 'w': 0.5, 'h': 0.08, 'label': 'Date of Birth'},
+        "father_name": {'x': 0.08, 'y': 0.42, 'w': 0.7, 'h': 0.09, 'label': 'Father Name'},
+    },
+    # Add ePAN specific template (downloaded PDF)
+    "epan": {
+        "pan_number": {'x': 0.55, 'y': 0.32, 'w': 0.35, 'h': 0.06, 'label': 'PAN'},
+        "name": {'x': 0.55, 'y': 0.24, 'w': 0.40, 'h': 0.06, 'label': 'Name'},
+        "dob": {'x': 0.55, 'y': 0.40, 'w': 0.30, 'h': 0.06, 'label': 'Date of Birth'},
+        "photo": {'x': 0.10, 'y': 0.24, 'w': 0.15, 'h': 0.20, 'label': 'Photo'},
     },
     "passport": {
         "name": {'x': 0.12, 'y': 0.18, 'w': 0.6, 'h': 0.07, 'label': 'Name'},
         "passport_number": {'x': 0.12, 'y': 0.28, 'w': 0.45, 'h': 0.07, 'label': 'Passport Number'},
         "nationality": {'x': 0.12, 'y': 0.36, 'w': 0.5, 'h': 0.06, 'label': 'Nationality'},
         "dob": {'x': 0.12, 'y': 0.42, 'w': 0.4, 'h': 0.06, 'label': 'Date of Birth'},
+        "place_of_birth": {'x': 0.12, 'y': 0.48, 'w': 0.5, 'h': 0.06, 'label': 'Place of Birth'},
+        "photo": {'x': 0.70, 'y': 0.18, 'w': 0.20, 'h': 0.25, 'label': 'Photo'},
     }
 }
 
@@ -359,9 +383,6 @@ def draw_redactions(color_bgr: np.ndarray, boxes: List[Tuple[int, int, int, int]
         elif style == "yellow":
             # Yellow highlight for temporary redaction
             cv2.rectangle(color_bgr, (x, y), (x + w, y + h), (0, 255, 255), thickness=-1)
-        elif style == "red":
-            # Red highlight for brush redaction
-            cv2.rectangle(color_bgr, (x, y), (x + w, y + h), (0, 0, 255), thickness=-1)
         else:
             # Black by default for permanent redaction
             cv2.rectangle(color_bgr, (x, y), (x + w, y + h), (0, 0, 0), thickness=-1)
